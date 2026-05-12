@@ -16,7 +16,7 @@ metadata:
   name: loki-config
   namespace: monitoring
 data:
-  loki-config.yml: |
+  local-config.yaml: |
     auth_enabled: false
     ingester:
       chunk_idle_period: 3m
@@ -98,6 +98,8 @@ spec:
       containers:
       - name: loki
         image: grafana/loki:latest
+        args:
+          - -config.file=/etc/loki/local-config.yaml
         ports:
         - containerPort: 3100
           name: http
