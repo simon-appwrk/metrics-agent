@@ -98,11 +98,15 @@ echo ""
 # Get NodePort information
 GRAFANA_PORT=$(kubectl get svc grafana -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')
 PROMETHEUS_PORT=$(kubectl get svc prometheus -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')
+LOKI_PORT=$(kubectl get svc loki -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')
+ALERTMANAGER_PORT=$(kubectl get svc alertmanager -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
 
-echo "🔗 Access URLs (using NodePort):"
-echo "  Grafana:    http://localhost:$GRAFANA_PORT (admin / admin123)"
-echo "  Prometheus: http://localhost:$PROMETHEUS_PORT"
-echo "  Loki:       via Grafana datasource"
+echo "🔗 Access URLs (using NodePort, node IP: $NODE_IP):"
+echo "  Grafana:      http://$NODE_IP:$GRAFANA_PORT (admin / admin123)"
+echo "  Prometheus:   http://$NODE_IP:$PROMETHEUS_PORT"
+echo "  Loki push:    http://$NODE_IP:$LOKI_PORT/loki/api/v1/push"
+echo "  Alertmanager: http://$NODE_IP:$ALERTMANAGER_PORT"
 echo ""
 
 echo "📋 Useful Commands:"

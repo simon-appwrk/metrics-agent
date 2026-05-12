@@ -84,10 +84,11 @@ metadata:
   labels:
     app: alertmanager
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
   - port: 9093
     targetPort: web
+    nodePort: 30330
     name: web
   selector:
     app: alertmanager

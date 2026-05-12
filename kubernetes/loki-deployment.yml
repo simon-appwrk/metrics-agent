@@ -146,10 +146,11 @@ metadata:
   labels:
     app: loki
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
   - port: 3100
     targetPort: http
+    nodePort: 30320
     name: http
   selector:
     app: loki
