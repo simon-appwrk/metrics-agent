@@ -1,0 +1,90 @@
+# ==========================================
+# PROMTAIL CONFIGURATION - FOR REMOTE SERVERS
+# ==========================================
+# Copy this file to each remote server and run Promtail there
+# It will scrape logs and send them to Loki
+# Installation: https://grafana.com/docs/loki/latest/clients/promtail/installation/
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://<LOKI_SERVER_IP>:3100/loki/api/v1/push
+    tenant_id: production
+
+scrape_configs:
+  # ==========================================
+  # PM2 LOGS (if running pm2 applications)
+  # ==========================================
+  - job_name: pm2_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pm2
+          server: ${SERVER_NAME}
+          __path__: /home/*/.pm2/logs/*.log
+    pipeline_stages:
+      - regex:
+        expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<level>\w+) (?P<message>.*)$'
+      - labels:
+          server:
+          job:
+
+  # ==========================================
+  # DOCKER LOGS (if running docker containers)
+  # ==========================================
+  - job_name: docker_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          server: ${SERVER_NAME}
+          __path__: /var/lib/docker/containers/*/*log
+
+  # Example for a specific Docker app named langgraph-chatbot
+  # - job_name: docker_langgraph_chatbot
+  #   static_configs:
+  #     - targets:
+  #         - localhost
+  #       labels:
+  #         job: langgraph-chatbot
+  #         server: ${SERVER_NAME}
+  #         __path__: /var/lib/docker/containers/*/langgraph-chatbot-*/*-json.log
+
+  # ==========================================
+  # SYSLOG (system logs)
+  # ==========================================
+  - job_name: syslog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          server: ${SERVER_NAME}
+          __path__: /var/log/syslog
+    pipeline_stages:
+      - multiline:
+          line_start_pattern: '^\w+ \d+ \d+:\d+:\d+'
+
+  # ==========================================
+  # APPLICATION LOGS (custom application)
+  # ==========================================
+  - job_name: app_logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: application
+          server: ${SERVER_NAME}
+          __path__: /var/log/app/*.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) (?P<level>\w+) (?P<message>.*)$'
+      - labels:
+          level:

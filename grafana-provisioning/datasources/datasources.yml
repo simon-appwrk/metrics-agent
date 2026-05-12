@@ -1,0 +1,39 @@
+---
+apiVersion: 1
+
+datasources:
+  # ==========================================
+  # LOKI DATASOURCE
+  # ==========================================
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+    editable: true
+    isDefault: false
+
+  # ==========================================
+  # PROMETHEUS DATASOURCE
+  # ==========================================
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    jsonData:
+      timeInterval: 15s
+    editable: true
+    isDefault: true
+
+  # ==========================================
+  # REMOTE PROMETHEUS (if needed)
+  # ==========================================
+  # Uncomment if you have a remote Prometheus instance
+  # - name: Remote Prometheus
+  #   type: prometheus
+  #   access: proxy
+  #   url: http://<REMOTE_SERVER_IP>:9090
+  #   jsonData:
+  #     timeInterval: 30s
+  #   editable: true

@@ -1,0 +1,33 @@
+# Environment variables - NEVER commit
+.env
+.env.local
+.env.prod
+
+# Docker volumes
+grafana_storage/
+loki_storage/
+prometheus_storage/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Local scripts
+local-test.sh
+test-*.yml

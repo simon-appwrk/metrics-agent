@@ -1,0 +1,80 @@
+# ==========================================
+# PROMETHEUS CONFIGURATION
+# ==========================================
+# Prometheus scrapes metrics from exporters
+# Docs: https://prometheus.io/docs/prometheus/latest/configuration/configuration/
+
+global:
+  scrape_interval: ${SCRAPE_INTERVAL}
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'monitoring-stack'
+
+# Alerting configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+# Load rule files
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # ==========================================
+  # LOCAL NODE EXPORTER
+  # ==========================================
+  - job_name: 'local-node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # ==========================================
+  # PROMETHEUS SELF-MONITORING
+  # ==========================================
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ==========================================
+  # REMOTE SERVER 1 - NODE EXPORTER METRICS
+  # ==========================================
+  - job_name: 'remote-server-1'
+    static_configs:
+      - targets: ['${REMOTE_SERVER_1_HOST}:${REMOTE_SERVER_1_PORT}']
+        labels:
+          server_name: '${REMOTE_SERVER_1_NAME}'
+          region: 'production'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+    scrape_interval: 30s
+
+  # ==========================================
+  # REMOTE SERVER 2 - NODE EXPORTER METRICS
+  # ==========================================
+  - job_name: 'remote-server-2'
+    static_configs:
+      - targets: ['${REMOTE_SERVER_2_HOST}:${REMOTE_SERVER_2_PORT}']
+        labels:
+          server_name: '${REMOTE_SERVER_2_NAME}'
+          region: 'production'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+    scrape_interval: 30s
+
+  # ==========================================
+  # REMOTE SERVER 3 - NODE EXPORTER METRICS
+  # ==========================================
+  - job_name: 'remote-server-3'
+    static_configs:
+      - targets: ['${REMOTE_SERVER_3_HOST}:${REMOTE_SERVER_3_PORT}']
+        labels:
+          server_name: '${REMOTE_SERVER_3_NAME}'
+          region: 'production'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+    scrape_interval: 30s

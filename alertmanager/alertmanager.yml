@@ -1,0 +1,28 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: email-notifications
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+  routes:
+    - match:
+        severity: critical
+      receiver: email-notifications
+
+receivers:
+  - name: email-notifications
+    email_configs:
+      - to: 'dev-team@example.com'
+        from: 'alertmanager@example.com'
+        smarthost: 'smtp.example.com:587'
+        auth_username: 'smtp-user'
+        auth_password: 'smtp-password'
+        require_tls: true
+        send_resolved: true
+
+templates: []
+
+# NOTE: Replace the email settings above with your own SMTP details.
+# You can use services like Gmail SMTP, SendGrid, or your company email provider.
