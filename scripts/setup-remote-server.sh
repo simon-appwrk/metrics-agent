@@ -42,7 +42,7 @@ fi
 
 # Download and install node exporter
 LATEST_VERSION=$(curl -s https://api.github.com/repos/prometheus/node_exporter/releases/latest | grep 'tag_name' | cut -d '"' -f 4)
-CD /tmp
+cd /tmp
 wget https://github.com/prometheus/node_exporter/releases/download/${LATEST_VERSION}/node_exporter-${LATEST_VERSION#v}.linux-amd64.tar.gz
 tar xvfz node_exporter-${LATEST_VERSION#v}.linux-amd64.tar.gz
 cp node_exporter-${LATEST_VERSION#v}.linux-amd64/node_exporter /usr/local/bin/
