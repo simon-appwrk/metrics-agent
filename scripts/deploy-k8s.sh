@@ -40,7 +40,7 @@ echo ""
 
 # Deploy Loki
 echo "🚀 Deploying Loki..."
-kubectl apply -f kubernetes/loki-deployment.yml
+kubectl apply -f ../kubernetes/loki-deployment.yml
 echo "✅ Loki deployed"
 echo ""
 
@@ -52,13 +52,13 @@ echo ""
 
 # Deploy Prometheus
 echo "🚀 Deploying Prometheus..."
-kubectl apply -f kubernetes/prometheus-deployment.yml
+kubectl apply -f ../kubernetes/prometheus-deployment.yml
 echo "✅ Prometheus deployed"
 echo ""
 
 # Deploy Alertmanager
 echo "🚀 Deploying Alertmanager..."
-kubectl apply -f kubernetes/alertmanager-deployment.yml
+kubectl apply -f ../kubernetes/alertmanager-deployment.yml
 echo "✅ Alertmanager deployed"
 echo ""
 
@@ -76,7 +76,7 @@ echo ""
 
 # Deploy Grafana
 echo "🚀 Deploying Grafana..."
-kubectl apply -f kubernetes/grafana-deployment.yml
+kubectl apply -f ../kubernetes/grafana-deployment.yml
 echo "✅ Grafana deployed"
 echo ""
 
