@@ -22,6 +22,18 @@ data:
       - "alerts.yml"
     scrape_configs:
       - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - source_labels: [__address__]
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '${1}:9100'
+            target_label: __address__
   alerts.yml: |
     groups:
       - name: monitoring.rules
@@ -36,7 +48,7 @@ data:
               description: "Prometheus has not been reachable for more than 2 minutes."
 
           - alert: NodeExporterDown
-            expr: up{job=~"local-node|remote-server-.*"} == 0
+            expr: up{job="node-exporter"} == 0
             for: 2m
             labels:
               severity: critical
@@ -70,18 +82,6 @@ data:
             annotations:
               summary: "Low disk space detected"
               description: "Root disk space is below 10% on {{ $labels.instance }}."
-        static_configs:
-          - targets: ['localhost:9090']
-      - job_name: 'node-exporter'
-        kubernetes_sd_configs:
-          - role: node
-        relabel_configs:
-          - action: labelmap
-            regex: __meta_kubernetes_node_label_(.+)
-          - source_labels: [__address__]
-            regex: '([^:]+)(?::\d+)?'
-            replacement: '${1}:9100'
-            target_label: __address__
 ---
 # ==========================================
 # PROMETHEUS PERSISTENT VOLUME CLAIM
