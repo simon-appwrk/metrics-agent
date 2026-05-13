@@ -1,0 +1,155 @@
+---
+# ==========================================
+# AUTH PROXY  (nginx in front of Loki + Prometheus)
+# ==========================================
+# A tiny nginx reverse proxy that:
+#   - Listens on :8080 with two virtual hosts
+#       stream.appwrk.com   -> loki:3100
+#       metrics.appwrk.com  -> prometheus:9090
+#   - Enforces HTTP Basic Auth on every endpoint except the health probes
+#   - Reads credentials from the Secret `auth-proxy-htpasswd`
+#
+# The Secret is NOT defined in this file (would put a hash in git).
+# Create it BEFORE applying this manifest:
+#
+#   bash scripts/create-auth-secret.sh monitoring '<your-strong-password>'
+#
+# Cloudflare Tunnel routes:
+#   stream.appwrk.com   -> http://localhost:30340
+#   metrics.appwrk.com  -> http://localhost:30340
+# (both hostnames point at the same NodePort; nginx splits on Host)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-proxy-config
+  namespace: monitoring
+data:
+  nginx.conf: |
+    worker_processes auto;
+    events { worker_connections 1024; }
+    http {
+      access_log /dev/stdout;
+      error_log  /dev/stderr warn;
+
+      # Push payloads can be a few MB (Promtail batches, prom-agent WAL flush)
+      client_max_body_size 50m;
+      proxy_read_timeout   120s;
+      proxy_send_timeout   120s;
+      proxy_http_version   1.1;
+
+      # ---------- Loki (stream.appwrk.com) ----------
+      server {
+        listen 8080;
+        server_name stream.appwrk.com;
+
+        # Health probe — left open so the tunnel + uptime checks work
+        location = /ready {
+          proxy_pass http://loki:3100/ready;
+        }
+
+        location / {
+          auth_basic           "monitoring";
+          auth_basic_user_file /etc/nginx/auth/htpasswd;
+          proxy_pass http://loki:3100;
+          proxy_set_header Host              $host;
+          proxy_set_header X-Forwarded-For   $remote_addr;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+      }
+
+      # ---------- Prometheus (metrics.appwrk.com) ----------
+      server {
+        listen 8080;
+        server_name metrics.appwrk.com;
+
+        location = /-/ready {
+          proxy_pass http://prometheus:9090/-/ready;
+        }
+
+        location / {
+          auth_basic           "monitoring";
+          auth_basic_user_file /etc/nginx/auth/htpasswd;
+          proxy_pass http://prometheus:9090;
+          proxy_set_header Host              $host;
+          proxy_set_header X-Forwarded-For   $remote_addr;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+      }
+
+      # ---------- Default deny (unknown Host header) ----------
+      server {
+        listen 8080 default_server;
+        return 444;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-proxy
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-proxy
+  template:
+    metadata:
+      labels:
+        app: auth-proxy
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: auth
+          mountPath: /etc/nginx/auth
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: auth-proxy-config
+      - name: auth
+        secret:
+          secretName: auth-proxy-htpasswd
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-proxy
+  namespace: monitoring
+  labels:
+    app: auth-proxy
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    targetPort: http
+    nodePort: 30340
+    name: http
+  selector:
+    app: auth-proxy

@@ -3,17 +3,17 @@
 # REMOTE SERVER MONITORING AGENT INSTALLER
 # ==========================================
 # Installs three systemd services on the remote server:
-#   - node_exporter  (collects host metrics on localhost:9100)
-#   - promtail       (pushes logs to Loki via HTTPS + Cloudflare Access)
+#   - node_exporter  (collects host metrics on 127.0.0.1:9100)
+#   - promtail       (pushes logs to Loki via HTTPS + HTTP Basic Auth)
 #   - prom-agent     (Prometheus in agent mode — scrapes node_exporter,
-#                     remote_writes to central Prometheus via HTTPS + CF Access)
+#                     remote_writes to central Prometheus via HTTPS + Basic Auth)
 #
-# Designed for a domain-only central stack (e.g. Cloudflare Tunnel) where
-# the remote server has no public IP. All endpoints are HTTPS domains and
-# auth is enforced via Cloudflare Access service tokens.
+# Designed for a domain-only central stack (e.g. Cloudflare Tunnel) where the
+# remote server has no public IP. All endpoints are HTTPS domains and auth
+# is enforced by the central nginx auth-proxy via HTTP Basic Auth.
 #
 # Configuration is read from /etc/monitoring-agent/.env
-# A template is in scripts/remote-agent.env.example
+# A template is at scripts/remote-agent.env.example.
 #
 # Usage:
 #   sudo cp remote-agent.env.example /etc/monitoring-agent/.env
@@ -53,7 +53,7 @@ LOKI_TENANT_ID="${LOKI_TENANT_ID:-production}"
 SCRAPE_INTERVAL="${SCRAPE_INTERVAL:-15s}"
 
 # Required vars
-for var in LOKI_PUSH_URL PROM_REMOTE_WRITE_URL CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET; do
+for var in LOKI_PUSH_URL PROM_REMOTE_WRITE_URL AUTH_USERNAME AUTH_PASSWORD; do
     if [[ -z "${!var:-}" ]]; then
         echo "ERROR: $var is empty in $AGENT_ENV_FILE"
         exit 1
@@ -66,7 +66,8 @@ echo "=========================================="
 echo "Server name           : $SERVER_NAME"
 echo "Loki push URL         : $LOKI_PUSH_URL"
 echo "Prom remote_write URL : $PROM_REMOTE_WRITE_URL"
-echo "CF Access client id   : ${CF_ACCESS_CLIENT_ID:0:8}... (redacted)"
+echo "Auth username         : $AUTH_USERNAME"
+echo "Auth password         : (redacted, ${#AUTH_PASSWORD} chars)"
 echo "=========================================="
 echo ""
 
@@ -119,7 +120,7 @@ systemctl daemon-reload
 systemctl enable --now node_exporter
 
 # ==========================================
-# 2. promtail (push logs to Loki + CF Access)
+# 2. promtail (push logs to Loki with HTTP Basic Auth)
 # ==========================================
 echo ">>> Installing promtail ..."
 
@@ -145,10 +146,10 @@ if getent group docker >/dev/null; then
     usermod -aG docker promtail
 fi
 
-# The Promtail config references CF Access headers via ${...}. Promtail's
-# `-config.expand-env=true` flag tells it to expand environment variables
-# at startup. We pass those variables to the unit via EnvironmentFile=, so
-# the actual secret never lives in the YAML on disk.
+# The YAML references ${AUTH_USERNAME} / ${AUTH_PASSWORD} as literal placeholders.
+# Promtail's `-config.expand-env=true` flag expands them at startup using the
+# variables that systemd loads from EnvironmentFile=. The actual password is
+# NOT written into the YAML on disk.
 cat > /etc/promtail/config.yml <<EOF
 server:
   http_listen_port: 9080
@@ -160,9 +161,9 @@ positions:
 clients:
   - url: ${LOKI_PUSH_URL}
     tenant_id: ${LOKI_TENANT_ID}
-    headers:
-      CF-Access-Client-Id: \${CF_ACCESS_CLIENT_ID}
-      CF-Access-Client-Secret: \${CF_ACCESS_CLIENT_SECRET}
+    basic_auth:
+      username: \${AUTH_USERNAME}
+      password: \${AUTH_PASSWORD}
 
 scrape_configs:
   - job_name: syslog
@@ -223,7 +224,7 @@ systemctl daemon-reload
 systemctl enable --now promtail
 
 # ==========================================
-# 3. prom-agent (Prometheus in agent mode)
+# 3. prom-agent (Prometheus in agent mode + Basic Auth)
 # ==========================================
 echo ">>> Installing prom-agent ..."
 
@@ -244,6 +245,14 @@ rm -rf "prometheus-${PROM_VERSION_NO_V}.linux-amd64"*
 mkdir -p /etc/prom-agent
 mkdir -p /var/lib/prom-agent
 
+# Prometheus does NOT support env-var expansion in basic_auth.password, so we
+# use `password_file:` and write the password to a 0600 file owned by the
+# prom_agent user. The .env file remains the single source of truth.
+umask 077
+printf '%s' "$AUTH_PASSWORD" > /etc/prom-agent/password
+chown prom_agent:prom_agent /etc/prom-agent/password
+chmod 600 /etc/prom-agent/password
+
 cat > /etc/prom-agent/agent.yml <<EOF
 global:
   scrape_interval: ${SCRAPE_INTERVAL}
@@ -259,12 +268,13 @@ scrape_configs:
 
 remote_write:
   - url: ${PROM_REMOTE_WRITE_URL}
-    headers:
-      CF-Access-Client-Id: \${CF_ACCESS_CLIENT_ID}
-      CF-Access-Client-Secret: \${CF_ACCESS_CLIENT_SECRET}
+    basic_auth:
+      username: ${AUTH_USERNAME}
+      password_file: /etc/prom-agent/password
 EOF
 
 chown -R prom_agent:prom_agent /etc/prom-agent /var/lib/prom-agent
+chmod 640 /etc/prom-agent/agent.yml
 
 cat > /etc/systemd/system/prom-agent.service <<EOF
 [Unit]
@@ -276,13 +286,11 @@ Wants=network-online.target
 User=prom_agent
 Group=prom_agent
 Type=simple
-EnvironmentFile=${AGENT_ENV_FILE}
 ExecStart=/usr/local/bin/prom-agent \\
   --config.file=/etc/prom-agent/agent.yml \\
   --enable-feature=agent \\
   --storage.agent.path=/var/lib/prom-agent \\
-  --web.listen-address=127.0.0.1:9091 \\
-  --enable-feature=expand-external-labels
+  --web.listen-address=127.0.0.1:9091
 Restart=always
 RestartSec=10
 
