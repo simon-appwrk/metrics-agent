@@ -124,6 +124,9 @@ spec:
           - '--config.file=/etc/prometheus/prometheus.yml'
           - '--storage.tsdb.path=/prometheus'
           - '--storage.tsdb.retention.time=30d'
+          # Accept metrics pushed by remote prom-agent instances over the
+          # Cloudflare Tunnel (metrics.appwrk.com). See REMOTE_SERVER_SETUP.md.
+          - '--web.enable-remote-write-receiver'
         ports:
         - containerPort: 9090
           name: http

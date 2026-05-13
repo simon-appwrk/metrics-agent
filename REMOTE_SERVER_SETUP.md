@@ -1,245 +1,206 @@
-# Remote Server Setup — Metrics & Logs
+# Remote Server Setup — Metrics & Logs (domain + Cloudflare Access)
 
-This document describes what to install on each **monitored server** (the box whose metrics and logs you want to ship to your central Loki + Prometheus stack).
+This document describes how to ship **logs** and **metrics** from a remote
+server to the central Loki + Prometheus + Grafana stack when:
 
-Tested on **Ubuntu 22.04 / 24.04**. The central stack is assumed to be running on `master3` (K8s monitoring namespace) or any host exposing Loki on port `3100` and reachable from this server.
+- the central stack is exposed **only by domain** (via Cloudflare Tunnel, etc.),
+- the remote server has **no fixed public IP** (e.g. behind NAT), and
+- access is protected by **Cloudflare Access service tokens**.
 
----
-
-## 1. What gets installed
-
-Two agents run as systemd services on every monitored server:
-
-| Component       | Purpose                                                | Listens on |
-|-----------------|--------------------------------------------------------|------------|
-| `node_exporter` | Exposes host CPU / memory / disk / network metrics     | `:9100`    |
-| `promtail`      | Tails log files and pushes them to Loki                | `:9080`    |
-
-`node_exporter` is **pulled** by Prometheus (Prometheus initiates the scrape).
-`promtail` **pushes** logs to Loki (the agent initiates the connection).
+Tested on **Ubuntu 22.04 / 24.04**.
 
 ---
 
-## 2. Prerequisites on the remote server
+## 1. Architecture
 
-```bash
-sudo apt update
-sudo apt install -y curl wget unzip tar
+```
++---------------------------+              +------------------------------+
+|        REMOTE SERVER      |  HTTPS only  |       CENTRAL STACK          |
+|  (no public IP, NAT'd)    |  ----------> |  exposed via Cloudflare      |
+|                           |  CF Access   |  Tunnel on 3 hostnames:      |
+|  node_exporter  :9100 (local)            |                              |
+|        ^                  |              |  pulse.appwrk.com   Grafana  |
+|        |                  |              |  stream.appwrk.com  Loki     |
+|  prom-agent  --remote_write------------> |  metrics.appwrk.com Prom RW  |
+|                                          |                              |
+|  promtail  ----push logs--------------> |  stream.appwrk.com /loki/...  |
++---------------------------+              +------------------------------+
 ```
 
-Open the following inbound ports on the remote server's firewall so the central Prometheus can scrape metrics:
+Three agents run as systemd services on every remote server:
 
-```bash
-# allow Prometheus on master3 to reach node_exporter
-sudo ufw allow from <MASTER3_IP> to any port 9100 proto tcp
-```
+| Component       | Purpose                                                  | Listens (local only) |
+|-----------------|----------------------------------------------------------|----------------------|
+| `node_exporter` | Exposes host CPU / memory / disk / network metrics       | `127.0.0.1:9100`     |
+| `prom-agent`    | Prometheus in *agent mode* — scrapes node_exporter and `remote_write`s to central Prometheus | `127.0.0.1:9091` |
+| `promtail`      | Tails log files and pushes them to Loki                  | `127.0.0.1:9080`     |
 
-`promtail` only needs **outbound** access to Loki, so no extra inbound rule is required for it (port `9080` is local-only diagnostics).
+All three bind to **127.0.0.1 only**. They make **outbound HTTPS** calls to
+the central domains — no inbound ports need to be opened on the remote.
 
 ---
 
-## 3. Automated install (recommended)
+## 2. Prerequisites (one-time, on the central stack side)
 
-The repo ships a one-shot installer that does everything below. From the remote server:
+### 2.1 Expose Prometheus remote_write through a tunnel
 
-```bash
-# copy the script onto the remote server, then:
-sudo ./setup-remote-server.sh <LOKI_SERVER_IP> <SERVER_NAME>
-```
+The remote_write endpoint must be reachable from the internet. In Cloudflare
+Tunnel, add a public hostname pointing to the in-cluster Prometheus service:
 
-Arguments:
-- `<LOKI_SERVER_IP>` — IP of the host where Loki is reachable (e.g. master3's node IP if Loki is exposed via NodePort, or the LoadBalancer/Ingress IP).
-- `<SERVER_NAME>` — label used in Grafana to identify this server (e.g. `app-server-1`).
+| Hostname                  | Service                                          |
+|---------------------------|--------------------------------------------------|
+| `pulse.appwrk.com`        | `http://grafana.monitoring.svc:3000`             |
+| `stream.appwrk.com`       | `http://loki.monitoring.svc:3100`                |
+| `metrics.appwrk.com`      | `http://prometheus.monitoring.svc:9090`          |
 
-Verify after install:
-```bash
-systemctl status node_exporter
-systemctl status promtail
-curl -s http://localhost:9100/metrics | head        # should show node_* metrics
-curl -s http://localhost:9080/ready                  # promtail readiness
-```
-
----
-
-## 4. Manual install (if you'd rather do it step by step)
-
-### 4.1 Install Node Exporter
-
-```bash
-sudo useradd --no-create-home --shell /bin/false node_exporter
-
-VERSION=$(curl -s https://api.github.com/repos/prometheus/node_exporter/releases/latest \
-  | grep tag_name | cut -d '"' -f 4)
-cd /tmp
-wget https://github.com/prometheus/node_exporter/releases/download/${VERSION}/node_exporter-${VERSION#v}.linux-amd64.tar.gz
-tar xvfz node_exporter-${VERSION#v}.linux-amd64.tar.gz
-sudo cp node_exporter-${VERSION#v}.linux-amd64/node_exporter /usr/local/bin/
-sudo chown node_exporter:node_exporter /usr/local/bin/node_exporter
-```
-
-Create the systemd unit:
-
-```bash
-sudo tee /etc/systemd/system/node_exporter.service > /dev/null <<'EOF'
-[Unit]
-Description=Node Exporter
-After=network.target
-
-[Service]
-User=node_exporter
-Group=node_exporter
-Type=simple
-ExecStart=/usr/local/bin/node_exporter \
-  --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) \
-  --collector.netdev.device-exclude=^(veth.*)
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now node_exporter
-```
-
-### 4.2 Install Promtail
-
-```bash
-sudo useradd --no-create-home --shell /bin/false promtail
-
-VERSION=$(curl -s https://api.github.com/repos/grafana/loki/releases/latest \
-  | grep tag_name | cut -d '"' -f 4)
-cd /tmp
-wget https://github.com/grafana/loki/releases/download/${VERSION}/promtail-${VERSION}.linux-amd64.zip
-unzip promtail-${VERSION}.linux-amd64.zip
-sudo mv promtail-linux-amd64 /usr/local/bin/promtail
-sudo chmod a+x /usr/local/bin/promtail
-```
-
-Create config — replace `LOKI_SERVER_IP` and `SERVER_NAME`:
-
-```bash
-sudo mkdir -p /etc/promtail
-sudo tee /etc/promtail/config.yml > /dev/null <<'EOF'
-server:
-  http_listen_port: 9080
-  grpc_listen_port: 0
-
-positions:
-  filename: /tmp/promtail_positions.yaml
-
-clients:
-  - url: http://LOKI_SERVER_IP:3100/loki/api/v1/push
-    tenant_id: production
-
-scrape_configs:
-  - job_name: syslog
-    static_configs:
-      - targets: [localhost]
-        labels:
-          job: syslog
-          server: SERVER_NAME
-          __path__: /var/log/syslog
-
-  - job_name: pm2_logs
-    static_configs:
-      - targets: [localhost]
-        labels:
-          job: pm2
-          server: SERVER_NAME
-          __path__: /home/*/.pm2/logs/*.log
-
-  - job_name: docker_logs
-    static_configs:
-      - targets: [localhost]
-        labels:
-          job: docker
-          server: SERVER_NAME
-          __path__: /var/lib/docker/containers/*/*-json.log
-
-  - job_name: app_logs
-    static_configs:
-      - targets: [localhost]
-        labels:
-          job: application
-          server: SERVER_NAME
-          __path__: /var/log/app/*.log
-EOF
-
-# Promtail needs to read /var/log/syslog and docker logs
-sudo usermod -aG adm,docker promtail 2>/dev/null || sudo usermod -aG adm promtail
-sudo chown -R promtail:promtail /etc/promtail
-```
-
-Create the systemd unit:
-
-```bash
-sudo tee /etc/systemd/system/promtail.service > /dev/null <<'EOF'
-[Unit]
-Description=Promtail
-After=network.target
-
-[Service]
-User=promtail
-Group=promtail
-Type=simple
-ExecStart=/usr/local/bin/promtail -config.file=/etc/promtail/config.yml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now promtail
-```
-
----
-
-## 5. Register the new server in Prometheus
-
-On `master3`, edit the Prometheus ConfigMap and add a scrape job for the new host's node_exporter:
-
-```bash
-kubectl edit configmap prometheus-config -n monitoring
-```
-
-Under `scrape_configs:` in `prometheus.yml`, add:
+Then enable the remote_write receiver on central Prometheus.
+[kubernetes/prometheus-deployment.yml](kubernetes/prometheus-deployment.yml)
+already includes the flag:
 
 ```yaml
-      - job_name: 'remote-server-1'
-        static_configs:
-          - targets: ['<REMOTE_SERVER_IP>:9100']
-            labels:
-              server_name: 'app-server-1'
+args:
+  - '--web.enable-remote-write-receiver'
 ```
 
-Then force Prometheus to reload:
+Apply / restart Prometheus:
 
 ```bash
+kubectl apply -f kubernetes/prometheus-deployment.yml
 kubectl rollout restart deployment/prometheus -n monitoring
 ```
 
-Promtail does not need any server-side registration — it auto-streams to Loki as soon as it starts.
+### 2.2 Create a Cloudflare Access service token
+
+1. Cloudflare Zero Trust dashboard → **Access → Service Auth → Service Tokens**.
+2. Create a token (e.g. `monitoring-agent`). Cloudflare gives you a
+   **Client ID** and **Client Secret** — copy them immediately, the secret is
+   only shown once.
+3. On the Access **applications** protecting `stream.appwrk.com` and
+   `metrics.appwrk.com`, add a policy that allows this service token
+   (Include → Service Auth → choose the token).
 
 ---
 
-## 6. Verify end-to-end
+## 3. Install on a remote server
 
-| Check | Command / URL |
-|------|----------------|
-| Metrics reaching Prometheus | Open Prometheus UI → Status → Targets, ensure the new job is `UP` |
-| Logs reaching Loki | In Grafana → Explore → Loki datasource → `{server="app-server-1"}` |
-| Agent health on remote | `systemctl status node_exporter promtail` |
-| Agent logs on remote | `journalctl -u node_exporter -f` / `journalctl -u promtail -f` |
+### 3.1 Copy the installer + env template
+
+From your workstation:
+
+```bash
+scp scripts/setup-remote-server.sh user@remote:/tmp/
+scp scripts/remote-agent.env.example user@remote:/tmp/
+```
+
+### 3.2 Place and protect the env file
+
+On the remote server:
+
+```bash
+sudo mkdir -p /etc/monitoring-agent
+sudo mv /tmp/remote-agent.env.example /etc/monitoring-agent/.env
+sudo chmod 600 /etc/monitoring-agent/.env
+sudo chown root:root /etc/monitoring-agent/.env
+sudoedit /etc/monitoring-agent/.env   # fill in real values
+```
+
+Minimum fields to set:
+
+```dotenv
+SERVER_NAME=app-server-1
+LOKI_PUSH_URL=https://stream.appwrk.com/loki/api/v1/push
+PROM_REMOTE_WRITE_URL=https://metrics.appwrk.com/api/v1/write
+CF_ACCESS_CLIENT_ID=<from Cloudflare>
+CF_ACCESS_CLIENT_SECRET=<from Cloudflare>
+```
+
+> The `.env` file is the **only** place secrets live. It never enters git —
+> `.env*` is in `.gitignore`. Only `remote-agent.env.example` (no secrets)
+> is committed.
+
+### 3.3 Run the installer
+
+```bash
+sudo bash /tmp/setup-remote-server.sh
+```
+
+The script will:
+
+1. Install `node_exporter`, `promtail`, and `prom-agent` (Prometheus binary in agent mode).
+2. Write systemd units that pull `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`
+   from the env file at runtime via `EnvironmentFile=`. **The secrets never end up
+   inside any config file on disk** — only the variable *names* are written there.
+3. Enable and start all three services.
+
+### 3.4 Verify locally
+
+```bash
+systemctl status node_exporter promtail prom-agent
+
+# Each agent has a local readiness endpoint:
+curl -s http://127.0.0.1:9100/metrics | head
+curl -s http://127.0.0.1:9080/ready
+curl -s http://127.0.0.1:9091/-/ready
+
+# Check the outbound HTTPS calls are succeeding:
+journalctl -u promtail   -n 50 --no-pager
+journalctl -u prom-agent -n 50 --no-pager
+```
+
+### 3.5 Verify end-to-end (in Grafana)
+
+| Check                           | Where                                                              |
+|---------------------------------|--------------------------------------------------------------------|
+| Logs reaching Loki              | Grafana → Explore → Loki → `{server="app-server-1"}`               |
+| Metrics reaching Prometheus     | Grafana → Explore → Prometheus → `up{server="app-server-1"}`       |
+| Or in the dashboards            | Open the Node Exporter dashboard, filter by `server`               |
+
+You do **not** need to edit `prometheus.yml` to add a new scrape job — with
+remote_write the metrics arrive labelled with `server=<SERVER_NAME>`.
 
 ---
 
-## 7. Troubleshooting
+## 4. Updating an existing remote server
 
-- **Prometheus shows target `DOWN`** — confirm `:9100` is reachable from `master3`:
-  `curl -s http://<REMOTE_IP>:9100/metrics | head`. If it times out, check `ufw`/security groups.
-- **Promtail running but no logs in Grafana** — check `journalctl -u promtail -n 50`; common causes are wrong Loki URL, file permissions on `/var/log/syslog`, or the `tenant_id` mismatch (Loki must have `auth_enabled: false` or accept tenant `production`).
-- **Docker logs missing** — Promtail's user must be in the `docker` group, or run Promtail as root (less ideal).
+To rotate the Cloudflare Access token or change endpoints:
+
+```bash
+sudoedit /etc/monitoring-agent/.env
+sudo systemctl restart promtail prom-agent
+```
+
+To upgrade agent binaries, just re-run `setup-remote-server.sh`.
+
+---
+
+## 5. Uninstall
+
+```bash
+sudo systemctl disable --now node_exporter promtail prom-agent
+sudo rm /etc/systemd/system/{node_exporter,promtail,prom-agent}.service
+sudo rm -rf /etc/promtail /etc/prom-agent /var/lib/promtail /var/lib/prom-agent
+sudo rm /usr/local/bin/{node_exporter,promtail,prom-agent}
+sudo rm -rf /etc/monitoring-agent
+sudo userdel node_exporter promtail prom_agent
+sudo systemctl daemon-reload
+```
+
+---
+
+## 6. Troubleshooting
+
+- **Promtail logs `401 Unauthorized` or `403 Forbidden`**
+  The Cloudflare Access policy on `stream.appwrk.com` is not allowing the
+  service token. Re-check the policy includes Service Auth → your token.
+- **`prom-agent` logs `remote_write: 403`**
+  Same problem on the `metrics.appwrk.com` Access application.
+- **`prom-agent` logs `remote_write: 405`**
+  Central Prometheus is missing `--web.enable-remote-write-receiver`. See §2.1.
+- **No logs in Grafana but Promtail looks healthy**
+  Check `/var/lib/promtail/positions.yaml` is being updated, and that
+  Promtail can read `/var/log/syslog` (it's added to the `adm` group by the
+  installer).
+- **Docker logs missing**
+  The installer adds `promtail` to the `docker` group if it exists. If you
+  install Docker after running the script, run
+  `sudo usermod -aG docker promtail && sudo systemctl restart promtail`.
