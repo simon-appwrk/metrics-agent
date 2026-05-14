@@ -128,14 +128,17 @@ if ! id promtail &>/dev/null; then
     useradd --no-create-home --shell /bin/false promtail
 fi
 
-LOKI_VERSION=$(curl -fsSL https://api.github.com/repos/grafana/loki/releases/latest \
-    | grep '"tag_name"' | cut -d '"' -f 4)
+# Promtail is EOL'd by Grafana — last release that shipped a standalone
+# promtail binary is v3.0.0. Loki v3.4+ no longer ships promtail-*.zip.
+# v3.0.0 talks to Loki 3.x server fine.
+LOKI_VERSION=v3.0.0
+LOKI_VERSION_NO_V="${LOKI_VERSION#v}"
 
 cd /tmp
-wget -q "https://github.com/grafana/loki/releases/download/${LOKI_VERSION}/promtail-${LOKI_VERSION}.linux-amd64.zip"
-unzip -o "promtail-${LOKI_VERSION}.linux-amd64.zip" >/dev/null
+wget -q "https://github.com/grafana/loki/releases/download/${LOKI_VERSION}/promtail-${LOKI_VERSION_NO_V}.linux-amd64.zip"
+unzip -o "promtail-${LOKI_VERSION_NO_V}.linux-amd64.zip" >/dev/null
 install -m 0755 promtail-linux-amd64 /usr/local/bin/promtail
-rm -f "promtail-${LOKI_VERSION}.linux-amd64.zip" promtail-linux-amd64
+rm -f "promtail-${LOKI_VERSION_NO_V}.linux-amd64.zip" promtail-linux-amd64
 
 mkdir -p /etc/promtail
 mkdir -p /var/lib/promtail
